@@ -24,7 +24,7 @@ from . import llm
 from . import prompts
 from . import scanner
 
-dv_file_version = '261028.16'
+dv_file_version = '261028.17'
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +43,11 @@ _LICENSE_LINK_RE = re.compile(r"\[.*?\]\(\.?/?LICENSE[^)]*\)",
 
 # Первые 20 строк LICENSE — для детекта типа лицензии.
 _LICENSE_DETECT_LINES = 20
+
+# Каталоги-обёртки, которые не попадают в дерево документации,
+# если --src-dir не задан (например, src/doxdix/x.py ->
+# docs/modules/doxdix/x.md, а не docs/modules/src/doxdix/x.md).
+_IMPLICIT_SRC_ROOTS: frozenset[str] = frozenset({"src"})
 
 
 @dataclass
@@ -119,17 +124,31 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def _strip_implicit_src_root(rel: Path) -> Path:
+    """Отрезать первый компонент пути, если это implicit src-корень.
+
+    Нужно при запуске без --src-dir: иначе путь src/doxdix/backup.py
+    превращается в docs/modules/src/doxdix/backup.md и появляется
+    лишняя папка src/.
+    """
+    parts = rel.parts
+    if parts and parts[0] in _IMPLICIT_SRC_ROOTS:
+        return Path(*parts[1:])
+    return rel
+
+
 def _md_path_for(code_file: Path, project_root: Path,
                  src_dir: str | None, docs_dir: str) -> Path:
     """Правило зеркалирования: код -> docs_dir/<rel>.md.
 
     Решение п. 5: относительный путь от src_dir (если задан) или от
     project_root; префикс docs_dir; расширение меняется на .md.
+    Без --src-dir первый компонент из _IMPLICIT_SRC_ROOTS отрезается.
     """
     if src_dir:
         rel = code_file.relative_to((project_root / src_dir).resolve())
     else:
-        rel = code_file.relative_to(project_root)
+        rel = _strip_implicit_src_root(code_file.relative_to(project_root))
     return (project_root / docs_dir / rel).with_suffix(".md")
 
 
