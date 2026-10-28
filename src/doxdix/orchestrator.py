@@ -492,7 +492,12 @@ def _collect_modules_content(paths: list[Path],
         try:
             rel = path.relative_to(docs_root).as_posix()
         except ValueError:
-            rel = path.name
+            # --docs-dir вне docs/: ссылка в SUMMARY всё равно должна
+            # оставаться путём, а не голым именем файла.
+            try:
+                rel = path.relative_to(project_root).as_posix()
+            except ValueError:
+                rel = path.name
         body = text[:_SUMMARY_DOC_MAX_CHARS_PER_FILE]
         if len(text) > _SUMMARY_DOC_MAX_CHARS_PER_FILE:
             body += "\n… (содержимое усечено)"

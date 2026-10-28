@@ -184,7 +184,7 @@ src/doxdix/
 ├── changelog_gen.py  # разбор Conventional Commits → CHANGELOG.md
 ├── cli.py            # точка входа, разбор аргументов, режимы --check / --restore
 ├── llm.py            # клиенты Ollama (/api/*) и OpenAI-совместимых (/v1/*)
-├── orchestrator.py   # конвейер: сканирование → бэкап → LLM → запись → итог
+├── orchestrator.py   # конвейер: сканирование → бэкап → CHANGELOG → README → SUMMARY → модули → итог
 ├── prompts.py        # шаблоны промптов (README, модули, SUMMARY)
 └── scanner.py        # обход файлов (git ls-files или файловая система)
 ```

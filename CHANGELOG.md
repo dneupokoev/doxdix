@@ -12,11 +12,25 @@
 - feat: doxdix — CLI for automated documentation generation via LLM
 
 ### Fixed
+- fix: привести пути в промптах и SUMMARY в соответствие с ТЗ
 - fix: убрать обертку root из пути документации корневого проекта
 - fix: исправить пути подпроектов и логи шага 4
 - fix: пропускать пустые и неизменённые файлы, убрать ранний выход
 
 ### Documentation
+- docs: дополни описание автопоиска подпроектов
+- docs(doxdix): finalize SUMMARY.md
+- docs(doxdix): src/doxdix/scanner.py
+- docs(doxdix): src/doxdix/prompts.py
+- docs(doxdix): src/doxdix/orchestrator.py
+- docs(doxdix): src/doxdix/llm.py
+- docs(doxdix): src/doxdix/cli.py
+- docs(doxdix): src/doxdix/changelog_gen.py
+- docs(doxdix): src/doxdix/cache.py
+- docs(doxdix): src/doxdix/backup.py
+- docs(doxdix): src/doxdix/__init__.py
+- docs(doxdix): update README.md
+- docs(doxdix): update CHANGELOG.md
 - docs(doxdix): finalize SUMMARY.md
 - docs(doxdix): src/doxdix/scanner.py
 - docs(doxdix): src/doxdix/prompts.py
@@ -36,4 +50,5 @@
 - docs(readme): fix install URL (real GitHub user)
 
 ### Other
+- [non-conventional] ch
 - [non-conventional] ch
