@@ -15,7 +15,7 @@ import logging
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import backup as backup_mod
@@ -24,7 +24,7 @@ from . import llm
 from . import prompts
 from . import scanner
 
-dv_file_version = '261028.15'
+dv_file_version = '261028.16'
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +70,9 @@ class RunConfig:
     do_backup: bool
     init_license: bool
     do_readme: bool = True
-    log_file: Path = Path("doxdix.log")
+    # None — дефолт достраивает cli._build_run_config
+    # (<project>/doxdix.log); run() это поле не использует.
+    log_file: Path | None = None
 
 
 @dataclass
@@ -484,11 +486,20 @@ def _step_modules(cfg: RunConfig, files: list[Path],
                                cfg.src_dir, cfg.docs_dir)
         md_rel = md_path.relative_to(cfg.project_root)
 
-        code_content = _read_text(code_path)
-        if not code_content:
-            logger.error("[%d/%d] %s: пустой или нечитаемый файл",
-                         idx, total, rel)
+        try:
+            code_content = code_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            # Реальная ошибка чтения — это errors (ТЗ п. 10).
+            logger.error("[%d/%d] %s: не удалось прочитать файл: %s",
+                         idx, total, rel, exc)
             stats.errors += 1
+            continue
+        if not code_content.strip():
+            # Пустой (0 байт) или состоящий из пробелов файл — не
+            # ошибка: документировать нечего (ТЗ п. 6.6 п.11, п. 10).
+            logger.info("[%d/%d] %s: файл пуст, пропущено",
+                        idx, total, rel)
+            stats.skipped += 1
             continue
 
         existing = _read_text(md_path) if md_path.exists() else ""
@@ -519,6 +530,13 @@ def _step_modules(cfg: RunConfig, files: list[Path],
             continue
 
         new_content = _strip_code_fence(new_content)
+        if new_content == existing:
+            # Содержимое не изменилось — ни записи, ни коммита
+            # (ТЗ п. 6.6 п.9: коммит только после изменения).
+            logger.info("[%d/%d] %s -> %s ... без изменений",
+                        idx, total, rel, md_rel)
+            stats.skipped += 1
+            continue
         if not _write_text(md_path, new_content):
             stats.errors += 1
             continue
@@ -580,9 +598,15 @@ def _current_year() -> int:
 
 
 def run(cfg: RunConfig) -> RunStats:
-    """Выполнить конвейер шагов 0–5. Вернуть RunStats."""
+    """Выполнить конвейер шагов 0–5. Вернуть RunStats.
+
+    project_root нормализуется один раз, чтобы все шаги (в т.ч.
+    _md_path_for и relative_to) видели абсолютный путь даже при
+    программном вызове run() без cli.main().
+    """
     stats = RunStats()
-    project_root = cfg.project_root.resolve()
+    cfg = replace(cfg, project_root=cfg.project_root.resolve())
+    project_root = cfg.project_root
 
     # --- Шаг 0: сканирование ---
     logger.info("шаг 0: сканирование %s", project_root)
@@ -601,13 +625,17 @@ def run(cfg: RunConfig) -> RunStats:
         logger.error("сканирование: %s", exc)
         raise ConfigError(str(exc)) from exc
 
-    if not files:
-        logger.warning("файлов кода не найдено; завершаем")
-        return stats
+    if files:
+        logger.info("найдено файлов: %d", len(files))
+    else:
+        # Не выходим: CHANGELOG/README/SUMMARY всё равно можно
+        # актуализировать, шаг 4 просто вернёт пустой список
+        # (ТЗ п. 6.1–6.3 не предполагает раннего выхода).
+        logger.warning("файлов кода не найдено; шаг 4 будет пустым")
 
-    logger.info("найдено файлов: %d", len(files))
-
-    # --- --init-license (до бэкапа, чтобы LICENSE попал в бэкап) ---
+    # --- --init-license: создаём LICENSE до README, чтобы ссылка на
+    #     лицензию ставилась на существующий файл. В бэкап LICENSE не
+    #     входит (ТЗ п. 6.2: README, CHANGELOG, docs/). ---
     _init_license_if_requested(cfg, stats)
 
     # --- Шаг 0.5: бэкап ---
@@ -651,10 +679,8 @@ def run(cfg: RunConfig) -> RunStats:
                   has_git=git_data.has_git)
 
     # --- Итог ---
-    logger.info(
-        "итог: успешно: %d, ошибок: %d, пропущено: %d",
-        stats.success, stats.errors, stats.skipped,
-    )
+    # Сводка «Успешно: N, ошибок: M, пропущено: K. Лог: <path>»
+    # выводится в cli._cmd_run (ТЗ п. 6.8), здесь не дублируем.
     if stats.backup_created:
         logger.info("бэкап: %s", stats.backup_created)
     return stats

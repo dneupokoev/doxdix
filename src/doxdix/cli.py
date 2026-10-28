@@ -21,7 +21,7 @@ from . import backup as backup_mod
 from . import llm
 from . import orchestrator
 
-dv_file_version = '261028.14'
+dv_file_version = '261028.15'
 logger = logging.getLogger(__name__)
 
 
@@ -301,7 +301,10 @@ def _build_run_config(args: argparse.Namespace,
 def _cmd_run(args: argparse.Namespace, project_root: Path) -> int:
     """Основной запуск: настроить лог, проверить LLM, вызвать run()."""
     cfg = _build_run_config(args, project_root)
-    _setup_logging(cfg.log_file)
+    # cli — единственное место, где достраивается дефолтный путь лога
+    # (RunConfig.log_file по умолчанию None, см. п. 5/9 ТЗ).
+    log_file = cfg.log_file or (project_root / "doxdix.log")
+    _setup_logging(log_file)
 
     logger.info("doxdix: project=%s", project_root)
     logger.info("doxdix: model=%s url=%s", cfg.model, cfg.ollama_url)
@@ -332,7 +335,7 @@ def _cmd_run(args: argparse.Namespace, project_root: Path) -> int:
         return 2
     logger.info(
         "Успешно: %d, ошибок: %d, пропущено: %d. Лог: %s",
-        stats.success, stats.errors, stats.skipped, cfg.log_file,
+        stats.success, stats.errors, stats.skipped, log_file,
     )
     return 0 if stats.errors == 0 else 1
 
