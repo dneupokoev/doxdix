@@ -21,7 +21,7 @@ from . import backup as backup_mod
 from . import llm
 from . import orchestrator
 
-dv_file_version = '261028.15'
+dv_file_version = '261028.16'
 logger = logging.getLogger(__name__)
 
 
@@ -109,6 +109,10 @@ def _build_parser() -> argparse.ArgumentParser:
     g = p.add_argument_group("прочее")
     g.add_argument("--init-license", action="store_true",
                    help="создать заготовку LICENSE (MIT), если файла нет")
+    g.add_argument("--force", action="store_true",
+                   help="игнорировать кэш .doxdix/cache.json и "
+                        "перегенерировать все .md (полезно после смены "
+                        "модели/промптов)")
     g.add_argument("--check", action="store_true",
                    help="проверить LLM и модель, выйти")
     g.add_argument("--no-readme", action="store_true",
@@ -294,6 +298,7 @@ def _build_run_config(args: argparse.Namespace,
         do_backup=not args.no_backup,
         init_license=args.init_license,
         do_readme=not args.no_readme,
+        force=args.force,
         log_file=log_file,
     )
 

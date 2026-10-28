@@ -9,7 +9,7 @@
 ## Коды возврата
 - `0` — успех без ошибок, в том числе успешные `--check` и `--restore`.
 - `1` — были ошибки при обработке файлов (`stats.errors > 0`).
-- `2` — ошибка конфигурации/LLM/пути/бэкапа: неверный `PROJECT_PATH`, неверный timestamp для `--restore`, отсутствие модели в `--check`, `llm.LLMError`, `orchestrator.ConfigError`.
+- `2` — ошибка конфигурации/LLM/пути/бэкапа: неверный `PROJECT_PATH`, неверный timestamp для `--restore`, отсутствие модели в `--check`, `llm.LLMError`, `orchestrator.ConfigError`. В основном режиме отсутствие `--model` и `DOXDIX_MODEL` текущей реализацией может приводить к `AssertionError` (см. «Примечания»).
 
 ## Аргументы CLI
 - `PROJECT_PATH` — обязательный путь к корню целевого проекта.
@@ -20,7 +20,7 @@
   - `--exclude LIST` — исключения через запятую; по умолчанию `DEFAULT_EXCLUDES`.
 - LLM:
   - `--model NAME` — имя модели; иначе env `DOXDIX_MODEL`.
-  - `--ollama-url URL` — адрес LLM; иначе env `DOXDIX_OLLAMA_URL` или `DEFAULT_OLLAMA_URL`.
+  - `--ollama-url URL` — адрес LLM; иначе env `DOXDIX_OLLAMA_URL` или `DEFAULT_OLLAMA_URL`. URL с `/v1` включает OpenAI-совместимый режим.
   - `--api-key KEY` — API-ключ; иначе env `DOXDIX_API_KEY` или `"dummy"`.
   - `--timeout SEC` — таймаут запроса к LLM; по умолчанию `300`.
   - `--num-ctx N` — размер контекстного окна Ollama; по умолчанию `8192`.
@@ -39,6 +39,7 @@
   - `--restore TIMESTAMP` — восстановить из бэкапа и выйти.
 - Прочее:
   - `--init-license` — создать заготовку LICENSE (MIT), если файла нет.
+  - `--force` — игнорировать кэш `.doxdix/cache.json` и перегенерировать все `.md`.
   - `--check` — проверить LLM и модель, выйти.
   - `--no-readme` — не обновлять `README.md`.
   - `--log-file PATH` — файл лога; по умолчанию `<project>/doxdix.log`.
@@ -52,7 +53,7 @@
 - `_split_list(value: str) -> list[str]` — разбивает строку через запятую, обрезает пробелы, отбрасывает пустые элементы.
 - `_cmd_check(args: argparse.Namespace) -> int` — проверяет наличие модели и доступность LLM через `llm.check_model(..., timeout=10, api_key=...)`. При отсутствии модели или `llm.LLMError` возвращает `2`; при успехе печатает OK и возвращает `0`.
 - `_cmd_restore(args: argparse.Namespace, project_root: Path) -> int` — определяет `backup_dir`, вызывает `backup_mod.restore_backup()`. Если бэкап не найден, выводит список доступных бэкапов и возвращает `2`; иначе печатает число восстановленных файлов и возвращает `0`.
-- `_build_run_config(args: argparse.Namespace, project_root: Path) -> orchestrator.RunConfig` — собирает `RunConfig` из аргументов и env. Определяет модель, URL, API-ключ, каталог бэкапов, лог-файл, списки расширений/исключений и флаги git/CHANGELOG/бэкапов/README/LICENSE.
+- `_build_run_config(args: argparse.Namespace, project_root: Path) -> orchestrator.RunConfig` — собирает `RunConfig` из аргументов и env. Определяет модель, URL, API-ключ, каталог бэкапов, лог-файл, списки расширений/исключений, флаги git/CHANGELOG/бэкапов/README/LICENSE и `force`.
 - `_cmd_run(args: argparse.Namespace, project_root: Path) -> int` — собирает `RunConfig`, настраивает логирование, проверяет LLM и модель, вызывает `orchestrator.run(cfg)`. При `llm.LLMError` или `orchestrator.ConfigError` возвращает `2`. Итоговый код: `0`, если `stats.errors == 0`, иначе `1`.
 - `main(argv: list[str] | None = None) -> int` — разбирает аргументы, проверяет, что `PROJECT_PATH` является директорией, разрешает путь. Для `--restore` сначала настраивает логирование, затем вызывает `_cmd_restore()` без проверки LLM. Для `--check` вызывает `_cmd_check()`. Иначе вызывает `_cmd_run()`.
 
@@ -64,7 +65,7 @@
   - `orchestrator` — `RunConfig`, `run()`, `ConfigError`.
 
 ## Константы
-- `dv_file_version = '261028.15'`
+- `dv_file_version = '261028.16'`
 - `DEFAULT_OLLAMA_URL = "http://localhost:11434"`
 - `DEFAULT_EXTENSIONS = ".py,.js,.ts,.jsx,.tsx,.go,.rs"`
 - `DEFAULT_EXCLUDES` — строка исключений через запятую: `.git,.doxdix,node_modules,__pycache__,venv,.venv,env,dist,build,tests,test,.mypy_cache,.pytest_cache,.ruff_cache,target`.
@@ -74,7 +75,7 @@
 
 ## Примечания
 - `PROJECT_PATH` обязателен для всех режимов.
-- `--restore` выполняется до проверки LLM.
+- `--restore` выполняется до проверки LLM. При одновременном указании `--restore` и `--check` срабатывает `--restore`.
 - `--check` проверяет LLM и модель, затем выходит; файловое логирование для `--check` не настраивается.
 - При вызове `_setup_logging()` в основном режиме или `--restore` логирование перенастраивается: старые root-хендлеры удаляются.
 - `orchestrator.ConfigError` перехватывается в `_cmd_run()` и даёт код `2` без инкремента `stats.errors`.

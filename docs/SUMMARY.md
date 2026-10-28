@@ -39,6 +39,7 @@
 |---|---|
 | [__init__](modules/doxdix/__init__.md) | Инициализация пакета. |
 | [backup](modules/doxdix/backup.md) | Резервное копирование перед изменением документации. |
+| [cache](modules/doxdix/cache.md) | Кэш хэшей и проверка содержимого для пропуска пустых и неизменённых файлов. |
 | [changelog_gen](modules/doxdix/changelog_gen.md) | Разбор conventional commits и генерация changelog. |
 | [cli](modules/doxdix/cli.md) | CLI-интерфейс: разбор аргументов, точка входа и диспетчеризация режимов. |
 | [llm](modules/doxdix/llm.md) | Клиент для работы с LLM через Ollama и OpenAI-совместимые эндпоинты. |
@@ -50,6 +51,7 @@
 
 - [__init__](modules/doxdix/__init__.md)
 - [backup](modules/doxdix/backup.md)
+- [cache](modules/doxdix/cache.md)
 - [changelog_gen](modules/doxdix/changelog_gen.md)
 - [cli](modules/doxdix/cli.md)
 - [llm](modules/doxdix/llm.md)
@@ -61,6 +63,7 @@
 
 - `__init__.py` — инициализация пакета.
 - `backup.py` — резервное копирование перед изменением документации.
+- `cache.py` — кэш хэшей и проверка содержимого для пропуска пустых и неизменённых файлов.
 - `changelog_gen.py` — разбор conventional commits и генерация changelog.
 - `cli.py` — CLI-интерфейс: разбор аргументов, точка входа и диспетчеризация режимов.
 - `llm.py` — клиент для работы с LLM через Ollama и OpenAI-совместимые эндпоинты.

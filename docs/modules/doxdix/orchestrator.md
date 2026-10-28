@@ -4,7 +4,7 @@
 
 Модуль реализует главный конвейер документации проекта (шаги 0–5): сканирование исходников, создание бэкапа, генерацию/обновление `CHANGELOG.md`, `README.md`, `docs/SUMMARY.md`, обход файлов кода с генерацией `.md`-описаний и финальную сборку `SUMMARY.md`. Все операции обработки файлов **нефатальны** — ошибка логируется, инкрементирует счётчик `errors` и конвейер продолжается. Конфигурационные ошибки (недоступен Ollama, не найдена модель, некорректные пути) фатальны и перехватываются на уровне `cli.py` до вызова `run()`.
 
-Версия файла: `dv_file_version = '261028.17'`.
+Версия файла: `dv_file_version = '261028.18'`.
 
 ## Публичный API
 
@@ -41,6 +41,7 @@
 | `do_backup` | `bool` | включать шаг бэкапа |
 | `init_license` | `bool` | создать MIT-заготовку LICENSE при отсутствии |
 | `do_readme` | `bool = True` | включать шаг README |
+| `force` | `bool = False` | игнорировать `.doxdix/cache.json` и генерировать все `.md` заново (`--force`) |
 | `log_file` | `Path \| None` | путь лог-файла; `None` — дефолт `<project>/doxdix.log` достраивается в `cli`; `run()` это поле не использует |
 
 ### `RunStats`
@@ -49,7 +50,7 @@
 
 - `success: int = 0` — успешно обработанные файлы;
 - `errors: int = 0` — количество ошибок;
-- `skipped: int = 0` — пропущенные (например, превышен лимит токенов, пустой файл, содержимое не изменилось);
+- `skipped: int = 0` — пропущенные (например, превышен лимит токенов, пустой файл, содержимое не изменилось, файл не изменился по кэшу);
 - `backup_created: Path | None = None` — путь созданного бэкапа;
 - `license_created: bool = False` — был ли создан LICENSE.
 
@@ -59,7 +60,7 @@
 
 - **`run(cfg: RunConfig) -> RunStats`** — нормализует `project_root` (`replace(cfg, project_root=cfg.project_root.resolve())`), последовательно выполняет шаги 0 → 5, возвращает `RunStats`. Пустой список файлов не прерывает конвейер: шаги 1–3 и 5 выполняются, шаг 4 просто не находит файлов. Если сканер поднял `ValueError`, `run()` бросает `ConfigError`.
 
-Порядок выполнения: сканирование → `--init-license` → бэкап → CHANGELOG → README (если `do_readme`) → SUMMARY init → обход файлов → SUMMARY final. В конце логирует путь бэкапа, если он создан.
+Порядок выполнения: сканирование → `--init-license` → бэкап → CHANGELOG → README (если `do_readme`) → SUMMARY init → обход файлов с кэшем → SUMMARY final. В конце логирует путь бэкапа, если он создан. Кэш загружается через `cache_mod.Cache.load(project_root)` перед шагом 4 и сохраняется через `cache.save()` после него.
 
 ### Шаги конвейера
 
@@ -67,7 +68,7 @@
 - **`_step_changelog(cfg, git_data, stats)`** — шаг 1: генерация/дополнение `CHANGELOG.md` через `changelog_gen.generate`; при `--changelog-llm` тело `[Unreleased]` передаётся как `unreleased_block`. Пропускается при `--no-changelog` или отсутствии git. При ошибке генерации инкрементирует `stats.errors`. Пишет файл только при изменении, затем при необходимости делает git-коммит.
 - **`_step_readme(cfg, files, git_data, stats)`** — шаг 2: обновление `README.md` через LLM (промпт `prompts.README_PROMPT`), затем детерминированная вставка ссылки на LICENSE. Вызывается из `run()` только при `cfg.do_readme`. При ошибке LLM инкрементирует `stats.errors`. Пишет файл только при изменении, затем при необходимости делает git-коммит.
 - **`_step_summary(cfg, files, md_files, stats, final=False, has_git=True)`** — шаги 3 (init, промпт `SUMMARY_PROMPT`, по списку кода) и 5 (final, промпт `SUMMARY_FINAL_PROMPT`, по списку сгенерированных `.md`). В режиме `final` пути передаются относительно `docs/` (без префикса). Всегда пишет в `docs/SUMMARY.md` независимо от `docs_dir`. При ошибке LLM инкрементирует `stats.errors`.
-- **`_step_modules(cfg, files, stats, has_git=True) -> list[Path]`** — шаг 4: обход файлов кода, генерация/обновление `.md` для каждого через `prompts.MODULE_PROMPT`. Пропускает пустые файлы, файлы с существующей докой больше `max_doc_tokens` и файлы, чьё содержимое не изменилось (инкрементирует `skipped`). Ошибки чтения кода, LLM и записи инкрементируют `errors`. Возвращает список созданных/обновлённых `.md`.
+- **`_step_modules(cfg, files, stats, cache, has_git=True) -> list[Path]`** — шаг 4: обход файлов кода, генерация/обновление `.md` для каждого через `prompts.MODULE_PROMPT`. Для каждого файла вычисляется хэш через `cache_mod.file_sha256`. Если хэш совпал с кэшем, `cfg.force` не установлен и `.md` уже существует, файл пропускается без чтения и LLM. Пропускает пустые файлы, файлы с существующей докой больше `max_doc_tokens` и файлы, чьё содержимое не изменилось (инкрементирует `skipped`). При неизменном ответе LLM обновляет хэш в кэше. Ошибки чтения кода, LLM и записи инкрементируют `errors`. При успешной записи обновляет кэш и делает git-коммит. Возвращает список созданных/обновлённых `.md`.
 
 ### Утилиты
 
@@ -81,7 +82,7 @@
 - **`_git_commit(project_root, paths, message, do_commit, has_git=True)`** — `git add` + `git commit` только при `do_commit` и `has_git`; таймаут 30 с; ошибки (`FileNotFoundError`, `TimeoutExpired`, `OSError`, ненулевой код) логируются как warning и не инкрементируют `errors`.
 - **`_file_list_for_prompt(files, project_root) -> str`** — относительные пути через `\n` для промптов.
 - **`_recent_commits_for_prompt(commits, limit=10) -> str`** — последние N коммитов строками `sha[:8] subject`; при отсутствии коммитов возвращает `(нет данных git)`.
-- **`_strip_code_fence(text) -> str`** — срезает обрамляющие ` ```markdown ... ``` ` из ответа LLM, если ответ начинается с code fence.
+- **`_strip_code_fence(text) -> str`** — срезает обрамляющие code fence из ответа LLM, если ответ начинается с ```` ``` ````.
 - **`_project_context(project_root, limit=2000) -> str`** — первые `limit` символов `README.md` как контекст для промптов; если README нет — пустая строка.
 
 ### Работа с лицензией
@@ -103,6 +104,7 @@
 - Ошибки git-коммитов — только warning, `stats.errors` не инкрементируется.
 - Пустой или состоящий из пробелов файл кода — не ошибка: `skipped += 1`, конвейер продолжается.
 - Существующая дока больше `max_doc_tokens` или неизменившееся содержимое — `skipped += 1`.
+- Неизменившийся по кэшу файл при наличии `.md` — `skipped += 1`, LLM не вызывается.
 - Ошибка сканера (`ValueError`) — `run()` бросает `ConfigError`, `cli` завершает работу с кодом 2.
 - Конфигурационные проблемы (Ollama, модель, пути) перехватываются в `cli.py` **до** вызова `run()`.
 
@@ -111,11 +113,12 @@
 Импорты:
 
 - `from . import backup as backup_mod` — создание/ротация бэкапов (`backup_mod.create_backup(project_root, backup_dir, backup_keep)`).
+- `from . import cache as cache_mod` — кэш хэшей файлов (`cache_mod.Cache.load`, `cache.save`, `cache_mod.file_sha256`, `cache.is_unchanged`, `cache.set`).
 - `from . import changelog_gen` — генерация CHANGELOG (`changelog_gen.generate(...)`, `parse_commits`, `format_grouped`).
 - `from . import llm` — обращение к LLM (`llm.chat(...)`, исключение `llm.LLMError`).
 - `from . import prompts` — шаблоны промптов (`prompts.render`, `prompts.CHANGELOG_LLM_PROMPT`, `prompts.README_PROMPT`, `prompts.SUMMARY_PROMPT`, `prompts.SUMMARY_FINAL_PROMPT`, `prompts.MODULE_PROMPT`).
 - `from . import scanner` — сканирование проекта (`scanner.scan(...)`, типы `scanner.GitData`, `scanner.GitCommit`).
-- Стандартная библиотека: `logging`, `re`, `subprocess`, `time`, `dataclasses` (`dataclass`, `field`, `replace`), `pathlib`, локально `datetime`.
+- Стандартная библиотека: `logging`, `re`, `subprocess`, `time`, `dataclasses` (`dataclass`, `replace`; `field` импортирован, но не используется), `pathlib`, локально `datetime`.
 
 ## Использование в проекте
 
@@ -125,4 +128,4 @@
 2. валидирует конфигурацию (Ollama, модель, пути) — при ошибке завершает работу до вызова `run()`;
 3. вызывает `run(cfg)`, получает `RunStats` и использует счётчики для итогового лога и кода возврата.
 
-Сам модуль напрямую зависит от `scanner`, `backup`, `changelog_gen`, `llm`, `prompts` — каждый отвечает за свой этап, тогда как `pipeline` связывает их в единый сценарий.
+Сам модуль напрямую зависит от `scanner`, `backup`, `cache`, `changelog_gen`, `llm`, `prompts` — каждый отвечает за свой этап, тогда как `pipeline` связывает их в единый сценарий.

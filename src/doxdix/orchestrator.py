@@ -19,12 +19,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import backup as backup_mod
+from . import cache as cache_mod
 from . import changelog_gen
 from . import llm
 from . import prompts
 from . import scanner
 
-dv_file_version = '261028.17'
+dv_file_version = '261028.18'
 logger = logging.getLogger(__name__)
 
 
@@ -75,6 +76,9 @@ class RunConfig:
     do_backup: bool
     init_license: bool
     do_readme: bool = True
+    # True — игнорировать .doxdix/cache.json и генерировать все .md
+    # заново (флаг --force в cli.py).
+    force: bool = False
     # None — дефолт достраивает cli._build_run_config
     # (<project>/doxdix.log); run() это поле не использует.
     log_file: Path | None = None
@@ -491,9 +495,13 @@ def _step_summary(cfg: RunConfig, files: list[Path],
 # --------------------------------------------------------------------------
 
 def _step_modules(cfg: RunConfig, files: list[Path],
-                  stats: RunStats, has_git: bool = True) -> list[Path]:
+                  stats: RunStats, cache: cache_mod.Cache,
+                  has_git: bool = True) -> list[Path]:
     """Обойти файлы кода, сгенерировать/обновить .md для каждого.
 
+    Файл, код которого не менялся с прошлого запуска (хэш совпал с
+    .doxdix/cache.json) и для которого .md уже существует, пропускается
+    без обращения к LLM. При cfg.force кэш игнорируется.
     Возвращает список созданных/обновлённых .md путей.
     """
     created: list[Path] = []
@@ -504,6 +512,18 @@ def _step_modules(cfg: RunConfig, files: list[Path],
         md_path = _md_path_for(code_path, cfg.project_root,
                                cfg.src_dir, cfg.docs_dir)
         md_rel = md_path.relative_to(cfg.project_root)
+        cache_key = rel.as_posix()
+
+        # Хэш считаем до чтения текста: при совпадении с кэшем и
+        # наличии .md файл не читается как UTF-8 и не уходит в LLM
+        # (экономия токенов и времени).
+        sha = cache_mod.file_sha256(code_path)
+        if (sha is not None and not cfg.force
+                and cache.is_unchanged(cache_key, sha, md_path)):
+            logger.info("[%d/%d] %s: не изменился, пропущено",
+                        idx, total, rel)
+            stats.skipped += 1
+            continue
 
         try:
             code_content = code_path.read_text(encoding="utf-8")
@@ -555,12 +575,19 @@ def _step_modules(cfg: RunConfig, files: list[Path],
             logger.info("[%d/%d] %s -> %s ... без изменений",
                         idx, total, rel, md_rel)
             stats.skipped += 1
+            # .md уже соответствует коду: фиксируем хэш, чтобы не
+            # вызывать LLM повторно на следующем запуске.
+            if sha is not None:
+                cache.set(cache_key, sha)
             continue
         if not _write_text(md_path, new_content):
             stats.errors += 1
             continue
         created.append(md_path)
         stats.success += 1
+        # Успешная генерация и запись — обновляем хэш в кэше.
+        if sha is not None:
+            cache.set(cache_key, sha)
         elapsed = time.monotonic() - started
         logger.info("[%d/%d] %s -> %s ... OK (%.1fs)",
                     idx, total, rel, md_rel, elapsed)
@@ -687,10 +714,15 @@ def run(cfg: RunConfig) -> RunStats:
     _step_summary(cfg, files, [], stats, final=False,
                   has_git=git_data.has_git)
 
-    # --- Шаг 4: обход файлов ---
+    # --- Шаг 4: обход файлов (с кэшем хэшей) ---
     logger.info("шаг 4: обход %d файлов", len(files))
-    created_md = _step_modules(cfg, files, stats,
+    if cfg.force:
+        logger.info("кэш: проигнорирован (--force), все .md "
+                    "будут перегенерированы")
+    cache = cache_mod.Cache.load(project_root)
+    created_md = _step_modules(cfg, files, stats, cache,
                                has_git=git_data.has_git)
+    cache.save()
 
     # --- Шаг 5: SUMMARY (final) ---
     logger.info("шаг 5: SUMMARY.md (final)")
