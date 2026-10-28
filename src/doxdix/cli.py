@@ -54,7 +54,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         "(по умолчанию: docs/modules)")
     g.add_argument("--no-monorepo", action="store_true",
                    help="не группировать файлы по подпроектам: плоская "
-                        "структура docs/<docs-dir>/<путь>.md (как до "
+                        "структура <docs-dir>/<путь>.md (как до "
                         "поддержки монорепозиториев)")
     g.add_argument("--extensions", metavar="LIST", default=DEFAULT_EXTENSIONS,
                    help=f"расширения через запятую (по умолчанию: "

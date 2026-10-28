@@ -15,7 +15,7 @@ import logging
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import backup as backup_mod
@@ -174,8 +174,18 @@ def _md_path_for(code_file: Path, subproject: str | None,
             )
         return (project_root / docs_dir / rel).with_suffix(".md")
     sub_root = scanner.subproject_root(project_root, subproject)
-    rel = code_file.relative_to(sub_root).with_suffix(".md")
-    return project_root / docs_dir / subproject / rel
+    try:
+        rel = code_file.relative_to(sub_root)
+    except ValueError:
+        # Файл не под корнем своей группы (рассинхрон группировки и
+        # раскладки). Не роняем весь прогон: считаем путь от корня
+        # проекта — он всё равно уникален внутри подпроекта.
+        logger.warning(
+            "файл %s вне корня подпроекта %s; путь считается от корня "
+            "проекта", code_file, subproject,
+        )
+        rel = code_file.relative_to(project_root)
+    return project_root / docs_dir / subproject / rel.with_suffix(".md")
 
 
 def _git_commit(project_root: Path, paths: list[str], message: str,
@@ -613,19 +623,24 @@ def _step_modules(cfg: RunConfig,
     total = len(plan)
     for idx, (subproject, code_path, sub_root) in enumerate(plan, start=1):
         started = time.monotonic()
-        rel = code_path.relative_to(cfg.project_root)
+        code_rel = code_path.relative_to(cfg.project_root)
         rel_in_sub = code_path.relative_to(sub_root)
         md_path = _md_path_for(code_path, subproject, cfg.project_root,
                                cfg.src_dir, cfg.docs_dir)
         md_rel = md_path.relative_to(cfg.project_root)
         if subproject is None:
             # Плоский режим: ключ кэша прежний — путь от корня проекта.
-            cache_key = rel.as_posix()
+            cache_key = code_rel.as_posix()
         else:
             # Ключ обязан включать подпроект: один и тот же
             # относительный путь (например, assets/util.py) может
             # встретиться в нескольких подпроектах.
             cache_key = f"{subproject}/{rel_in_sub.as_posix()}"
+
+        # В логах шага показываем подпроект: в монорежиме это
+        # «<подпроект>/<путь>» (root/src/...), в плоском режиме — путь
+        # от корня проекта. Ключ кэша для этого подходит как есть.
+        rel = cache_key
 
         # Хэш считаем до чтения текста: при совпадении с кэшем и
         # наличии .md файл не читается как UTF-8 и не уходит в LLM
@@ -705,7 +720,8 @@ def _step_modules(cfg: RunConfig,
         logger.info("[%d/%d] %s -> %s ... OK (%.1fs)",
                     idx, total, rel, md_rel, elapsed)
         _git_commit(cfg.project_root, [str(md_rel)],
-                    f"docs(doxdix): {rel}", cfg.do_commit, has_git)
+                    f"docs(doxdix): {code_rel.as_posix()}",
+                    cfg.do_commit, has_git)
     return created
 
 
@@ -838,8 +854,11 @@ def run(cfg: RunConfig) -> RunStats:
                   has_git=git_data.has_git)
 
     # --- Шаг 4: обход файлов (с кэшем хэшей) ---
-    logger.info("шаг 4: обход %d файлов в %d подпроектах",
-                len(files), len(files_by_subproject))
+    if cfg.monorepo:
+        logger.info("шаг 4: обход %d файлов в %d подпроектах",
+                    len(files), len(files_by_subproject))
+    else:
+        logger.info("шаг 4: обход %d файлов (--no-monorepo)", len(files))
     if cfg.force:
         logger.info("кэш: проигнорирован (--force), все .md "
                     "будут перегенерированы")
