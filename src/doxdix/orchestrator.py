@@ -156,8 +156,9 @@ def _md_path_for(code_file: Path, subproject: str | None,
     """Правило зеркалирования: код -> путь .md.
 
     subproject задан (монорежим): docs_dir/<subproject>/<путь от корня
-    подпроекта>.md; для корневого проекта subproject = "root":
-    src/doxdix/backup.py -> docs/modules/root/src/doxdix/backup.md.
+    подпроекта>.md. Для корневого проекта (subproject = "root") обёртка
+    "root" не добавляется: src/doxdix/backup.py ->
+    docs/modules/src/doxdix/backup.md.
 
     subproject=None (--no-monorepo): плоская структура docs_dir/<rel>.md,
     где rel считается от src_dir (если задан) или от project_root
@@ -185,6 +186,10 @@ def _md_path_for(code_file: Path, subproject: str | None,
             "проекта", code_file, subproject,
         )
         rel = code_file.relative_to(project_root)
+    if sub_root == project_root:
+        # Корневой проект: без обёртки "root" — документы кладутся
+        # прямо в docs_dir (docs/modules/src/...).
+        return (project_root / docs_dir / rel).with_suffix(".md")
     return project_root / docs_dir / subproject / rel.with_suffix(".md")
 
 
