@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doxdix"
+version = "0.1.0"
+description = "Локальный CLI для автоматической генерации и актуализации документации проекта через Ollama."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "doxdix" }]
+dependencies = ["requests>=2.31"]
+
+[project.scripts]
+doxdix = "doxdix.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
