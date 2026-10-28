@@ -73,6 +73,20 @@
 - [prompts](modules/doxdix/prompts.md)
 - [scanner](modules/doxdix/scanner.md)
 
+### Документация модулей: актуальные пути
+
+| Документ | Назначение |
+|---|---|
+| [__init__](modules/root/src/doxdix/__init__.md) | Метаинформация пакета: `__version__ = "0.1.0"` и `dv_file_version`; реализации CLI, генерации документации или интеграции с Ollama в файле нет. |
+| [backup](modules/root/src/doxdix/backup.md) | Бэкап `README.md`, `CHANGELOG.md` и `docs/` в каталог с timestamp и `manifest.json`; восстановление и ротация по `keep`. |
+| [cache](modules/root/src/doxdix/cache.md) | Кэш SHA-256 исходников в `<project>/.doxdix/cache.json`; ключи учитывают подпроект, поддерживаются `--force` и пропуск неизменённых файлов. |
+| [changelog_gen](modules/root/src/doxdix/changelog_gen.md) | Парсинг Conventional Commits, группировка по секциям Keep a Changelog и генерация/обновление блока `## [Unreleased]`. |
+| [cli](modules/root/src/doxdix/cli.md) | Точка входа `main`, `argparse`-параметры, логирование, проверка LLM, `--restore`, `--check`, сборка `RunConfig` и коды возврата. |
+| [llm](modules/root/src/doxdix/llm.md) | HTTP-клиент для Ollama (`/api/chat`, `/api/tags`) и OpenAI-совместимых API (`/v1/chat/completions`, `/v1/models`), `chat`, `check_model`, `LLMError`. |
+| [orchestrator](modules/root/src/doxdix/orchestrator.md) | Конвейер шагов 0–5: сканирование, бэкап, CHANGELOG, README, SUMMARY, документация модулей; `RunConfig`, `RunStats`, `ConfigError`. |
+| [prompts](modules/root/src/doxdix/prompts.md) | Централизованные русскоязычные промпты для SUMMARY, README, документации модулей и CHANGELOG; функция `render`. |
+| [scanner](modules/root/src/doxdix/scanner.md) | Обход файлов, фильтрация по расширениям и исключениям, git-коммиты и tracked files, поддержка монорепозиториев и группировка по подпроектам. |
+
 ## Структура пакета
 
 - `__init__.py` — инициализация пакета; версии `__version__` и `dv_file_version`.
