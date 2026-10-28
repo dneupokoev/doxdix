@@ -25,7 +25,7 @@ from . import llm
 from . import prompts
 from . import scanner
 
-dv_file_version = '261028.18'
+dv_file_version = '261028.20'
 logger = logging.getLogger(__name__)
 
 
@@ -44,6 +44,12 @@ _LICENSE_LINK_RE = re.compile(r"\[.*?\]\(\.?/?LICENSE[^)]*\)",
 
 # Первые 20 строк LICENSE — для детекта типа лицензии.
 _LICENSE_DETECT_LINES = 20
+
+# Бюджет контекста для шагов 3 и 5 (SUMMARY): передаём в LLM не имена,
+# а содержимое .md модулей. Лимиты защищают от переполнения контекстного
+# окна, если документации много (4 символа ≈ 1 токен).
+_SUMMARY_DOCS_TOTAL_CHARS = 40000
+_SUMMARY_DOC_MAX_CHARS_PER_FILE = 2000
 
 # Каталоги-обёртки, которые не попадают в дерево документации,
 # если --src-dir не задан (например, src/doxdix/x.py ->
@@ -422,16 +428,61 @@ def _summary_path(cfg: RunConfig) -> Path:
     return cfg.project_root / "docs" / "SUMMARY.md"
 
 
-def _docs_relative(path: Path, project_root: Path) -> str:
-    """Путь относительно docs/ — для ссылок вида modules/... в SUMMARY.
+def _module_doc_files(cfg: RunConfig) -> list[Path]:
+    """Все .md модулей из docs_dir (кроме SUMMARY.md), по порядку путей."""
+    docs_path = cfg.project_root / cfg.docs_dir
+    if not docs_path.is_dir():
+        return []
+    return sorted(
+        (p for p in docs_path.rglob("*.md") if p.name != "SUMMARY.md"),
+        key=lambda p: p.as_posix(),
+    )
 
-    Если файл вне docs/ (не должно случаться), отдаём имя файла, чтобы
-    не сломать промпт.
+
+def _collect_modules_content(paths: list[Path],
+                             project_root: Path) -> str:
+    """Собрать содержимое .md модулей для промптов SUMMARY.
+
+    Формат: для каждого файла блок `### <путь относительно docs/>` и его
+    текст, усечённый до _SUMMARY_DOC_MAX_CHARS_PER_FILE символов. Общий
+    размер ограничен _SUMMARY_DOCS_TOTAL_CHARS; не влезшие в лимит файлы
+    перечисляются путями без содержимого. Пустые и нечитаемые файлы
+    пропускаются, при отсутствии данных возвращается "".
     """
-    try:
-        return path.relative_to(project_root / "docs").as_posix()
-    except ValueError:
-        return path.name
+    docs_root = project_root / "docs"
+    blocks: list[str] = []
+    omitted: list[str] = []
+    used = 0
+    sent = 0
+    for path in paths:
+        text = _read_text(path).strip()
+        if not text:
+            continue
+        try:
+            rel = path.relative_to(docs_root).as_posix()
+        except ValueError:
+            rel = path.name
+        body = text[:_SUMMARY_DOC_MAX_CHARS_PER_FILE]
+        if len(text) > _SUMMARY_DOC_MAX_CHARS_PER_FILE:
+            body += "\n… (содержимое усечено)"
+        block = f"### {rel}\n\n{body}\n"
+        if used + len(block) > _SUMMARY_DOCS_TOTAL_CHARS:
+            omitted.append(rel)
+            continue
+        blocks.append(block)
+        used += len(block)
+        sent += 1
+    if omitted:
+        blocks.append(
+            "### Прочие файлы документации (из-за лимита переданы "
+            "только пути)\n\n"
+            + "\n".join(f"- {rel}" for rel in omitted) + "\n"
+        )
+    if not blocks:
+        return ""
+    logger.debug("SUMMARY: передано .md файлов: %d, символов: %d",
+                 sent, used)
+    return "\n".join(blocks).rstrip() + "\n"
 
 
 def _step_summary(cfg: RunConfig, files: list[Path],
@@ -439,28 +490,44 @@ def _step_summary(cfg: RunConfig, files: list[Path],
                   final: bool = False, has_git: bool = True) -> None:
     """Создать/обновить docs/SUMMARY.md.
 
-    final=False — шаг 3 (по списку файлов кода).
-    final=True  — шаг 5 (ТЗ п. 6.7: отдельный промпт «дополни ссылками
-                  на созданные .md», пути — относительно docs/).
+    final=False — шаг 3: передаём содержимое уже существующих .md из
+                  docs_dir (при первом запуске — фолбэк на список кода).
+    final=True  — шаг 5: передаём содержимое созданных/обновлённых .md
+                  (ТЗ п. 6.7). Если изменённых .md нет — шаг пропускаем.
     """
     path = _summary_path(cfg)
     existing = _read_text(path)
     if final:
-        # Пути относительно docs/: в SUMMARY ссылки имеют вид
-        # modules/<подпуть>.md (ТЗ п. 7.1), без префикса docs/.
-        listing = "\n".join(
-            _docs_relative(m, cfg.project_root) for m in md_files
+        if not md_files:
+            logger.info("SUMMARY (final): изменённых .md нет, пропущено")
+            return
+        modules_content = _collect_modules_content(
+            md_files, cfg.project_root,
         )
+        if not modules_content:
+            logger.info("SUMMARY (final): содержимое .md пусто, пропущено")
+            return
         prompt = prompts.render(
             prompts.SUMMARY_FINAL_PROMPT,
-            file_list=listing,
+            modules_content=modules_content,
             existing_content=existing,
         )
     else:
-        listing = _file_list_for_prompt(files, cfg.project_root)
+        modules_content = _collect_modules_content(
+            _module_doc_files(cfg), cfg.project_root,
+        )
+        if not modules_content:
+            # Первый запуск: документации модулей ещё нет — даём
+            # модели хотя бы список файлов кода.
+            listing = _file_list_for_prompt(files, cfg.project_root)
+            modules_content = (
+                "(документация модулей ещё не создана; "
+                "список файлов кода проекта:\n"
+                f"{listing}\n)"
+            )
         prompt = prompts.render(
             prompts.SUMMARY_PROMPT,
-            file_list=listing,
+            modules_content=modules_content,
             existing_content=existing,
             project_context=_project_context(cfg.project_root),
         )
