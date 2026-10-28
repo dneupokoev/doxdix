@@ -23,8 +23,16 @@ from . import llm
 from . import prompts
 from . import scanner
 
-dv_file_version = '261028.13'
+dv_file_version = '261028.14'
 logger = logging.getLogger(__name__)
+
+
+class ConfigError(Exception):
+    """Ошибка конфигурации запуска (неверный путь и т.п.).
+
+    В отличие от ошибок обработки файлов не инкрементирует errors:
+    CLI завершается с кодом 2 (см. ТЗ п. 5, 10).
+    """
 
 
 # Регексп для проверки, есть ли уже ссылка на LICENSE в README
@@ -123,9 +131,13 @@ def _md_path_for(code_file: Path, project_root: Path,
 
 
 def _git_commit(project_root: Path, paths: list[str], message: str,
-                do_commit: bool) -> None:
-    """Сделать git-коммит. Ошибки — warning, не фатальны."""
-    if not do_commit:
+                do_commit: bool, has_git: bool = True) -> None:
+    """Сделать git-коммит. Ошибки — warning, не фатальны.
+
+    Коммит выполняется, только если do_commit и has_git
+    (ТЗ п. 6.4–6.6: без git коммиты не делаются).
+    """
+    if not do_commit or not has_git:
         return
     try:
         subprocess.run(
@@ -202,6 +214,46 @@ def _project_context(project_root: Path, limit: int = 2000) -> str:
 # Шаг 1: CHANGELOG.md
 # --------------------------------------------------------------------------
 
+def _changelog_body_llm(cfg: RunConfig,
+                        git_data: scanner.GitData) -> str | None:
+    """Тело `[Unreleased]` через LLM (--changelog-llm), либо None.
+
+    При ошибке LLM возвращает None — вызывающая сторона использует
+    детерминированную группировку (ТЗ п. 6.3, п. 7.4).
+    """
+    if not cfg.changelog_llm:
+        return None
+    parsed = changelog_gen.parse_commits(git_data.commits)
+    grouped = changelog_gen.format_grouped(parsed).strip()
+    if not grouped:
+        logger.info("CHANGELOG-LLM: нет изменений для переписывания")
+        return None
+
+    prompt = prompts.render(
+        prompts.CHANGELOG_LLM_PROMPT, grouped_commits=grouped,
+    )
+    try:
+        body = llm.chat(
+            cfg.ollama_url, cfg.model, prompt,
+            num_ctx=cfg.num_ctx, timeout=cfg.timeout, api_key=cfg.api_key,
+        )
+    except llm.LLMError as exc:
+        logger.warning(
+            "CHANGELOG-LLM: LLM-ошибка, оставляем детерминированный "
+            "вариант: %s", exc.message,
+        )
+        return None
+
+    body = _strip_code_fence(body).strip()
+    if not body:
+        logger.warning(
+            "CHANGELOG-LLM: пустой ответ LLM, оставляем "
+            "детерминированный вариант",
+        )
+        return None
+    return body
+
+
 def _step_changelog(cfg: RunConfig, git_data: scanner.GitData,
                     stats: RunStats) -> None:
     """Сгенерировать/дополнить CHANGELOG.md (если git есть и не отключён)."""
@@ -214,9 +266,14 @@ def _step_changelog(cfg: RunConfig, git_data: scanner.GitData,
 
     path = cfg.project_root / "CHANGELOG.md"
     existing = _read_text(path)
+
+    # --changelog-llm: переписать блок [Unreleased] через LLM.
+    unreleased_block = _changelog_body_llm(cfg, git_data)
+
     try:
         new_content = changelog_gen.generate(
             git_data.commits, existing, append=cfg.changelog_append,
+            unreleased_block=unreleased_block,
         )
     except Exception as exc:  # noqa: BLE001 — защита от неожиданного
         logger.error("CHANGELOG: ошибка генерации: %s", exc)
@@ -231,7 +288,8 @@ def _step_changelog(cfg: RunConfig, git_data: scanner.GitData,
         return
     logger.info("CHANGELOG.md: обновлён")
     _git_commit(cfg.project_root, ["CHANGELOG.md"],
-                "docs(doxdix): update CHANGELOG.md", cfg.do_commit)
+                "docs(doxdix): update CHANGELOG.md", cfg.do_commit,
+                git_data.has_git)
 
 
 # --------------------------------------------------------------------------
@@ -276,7 +334,8 @@ def _step_readme(cfg: RunConfig, files: list[Path],
         return
     logger.info("README.md: обновлён")
     _git_commit(cfg.project_root, ["README.md"],
-                "docs(doxdix): update README.md", cfg.do_commit)
+                "docs(doxdix): update README.md", cfg.do_commit,
+                git_data.has_git)
 
 
 def _detect_license_type(license_path: Path) -> str | None:
@@ -337,32 +396,48 @@ def _summary_path(cfg: RunConfig) -> Path:
     return cfg.project_root / "docs" / "SUMMARY.md"
 
 
+def _docs_relative(path: Path, project_root: Path) -> str:
+    """Путь относительно docs/ — для ссылок вида modules/... в SUMMARY.
+
+    Если файл вне docs/ (не должно случаться), отдаём имя файла, чтобы
+    не сломать промпт.
+    """
+    try:
+        return path.relative_to(project_root / "docs").as_posix()
+    except ValueError:
+        return path.name
+
+
 def _step_summary(cfg: RunConfig, files: list[Path],
                   md_files: list[Path], stats: RunStats,
-                  final: bool = False) -> None:
+                  final: bool = False, has_git: bool = True) -> None:
     """Создать/обновить docs/SUMMARY.md.
 
     final=False — шаг 3 (по списку файлов кода).
-    final=True  — шаг 5 (по списку созданных .md документации).
+    final=True  — шаг 5 (ТЗ п. 6.7: отдельный промпт «дополни ссылками
+                  на созданные .md», пути — относительно docs/).
     """
     path = _summary_path(cfg)
     existing = _read_text(path)
     if final:
+        # Пути относительно docs/: в SUMMARY ссылки имеют вид
+        # modules/<подпуть>.md (ТЗ п. 7.1), без префикса docs/.
         listing = "\n".join(
-            str(m.relative_to(cfg.project_root)) for m in md_files
+            _docs_relative(m, cfg.project_root) for m in md_files
         )
-        # Для финального шага промпт тот же, но список — .md файлы.
-        # ТЗ п. 6.7 требует «добавь ссылки на созданные .md», это
-        # делается тем же SUMMARY_PROMPT с file_list = md_files.
+        prompt = prompts.render(
+            prompts.SUMMARY_FINAL_PROMPT,
+            file_list=listing,
+            existing_content=existing,
+        )
     else:
         listing = _file_list_for_prompt(files, cfg.project_root)
-
-    prompt = prompts.render(
-        prompts.SUMMARY_PROMPT,
-        file_list=listing,
-        existing_content=existing,
-        project_context=_project_context(cfg.project_root),
-    )
+        prompt = prompts.render(
+            prompts.SUMMARY_PROMPT,
+            file_list=listing,
+            existing_content=existing,
+            project_context=_project_context(cfg.project_root),
+        )
     try:
         new_content = llm.chat(
             cfg.ollama_url, cfg.model, prompt,
@@ -386,7 +461,7 @@ def _step_summary(cfg: RunConfig, files: list[Path],
     _git_commit(cfg.project_root, ["docs/SUMMARY.md"],
                 "docs(doxdix): finalize SUMMARY.md" if final
                 else "docs(doxdix): update SUMMARY.md",
-                cfg.do_commit)
+                cfg.do_commit, has_git)
 
 
 # --------------------------------------------------------------------------
@@ -394,7 +469,7 @@ def _step_summary(cfg: RunConfig, files: list[Path],
 # --------------------------------------------------------------------------
 
 def _step_modules(cfg: RunConfig, files: list[Path],
-                  stats: RunStats) -> list[Path]:
+                  stats: RunStats, has_git: bool = True) -> list[Path]:
     """Обойти файлы кода, сгенерировать/обновить .md для каждого.
 
     Возвращает список созданных/обновлённых .md путей.
@@ -450,7 +525,7 @@ def _step_modules(cfg: RunConfig, files: list[Path],
         logger.info("[%d/%d] %s -> %s ... OK",
                     idx, total, rel, md_rel)
         _git_commit(cfg.project_root, [str(md_rel)],
-                    f"docs(doxdix): {rel}", cfg.do_commit)
+                    f"docs(doxdix): {rel}", cfg.do_commit, has_git)
     return created
 
 
@@ -518,9 +593,10 @@ def run(cfg: RunConfig) -> RunStats:
             changelog_limit=cfg.changelog_limit,
         )
     except ValueError as exc:
+        # Неверный --src-dir/путь — ошибка конфигурации, CLI вернёт 2
+        # (ТЗ п. 5, п. 10), а не 1.
         logger.error("сканирование: %s", exc)
-        stats.errors += 1
-        return stats
+        raise ConfigError(str(exc)) from exc
 
     if not files:
         logger.warning("файлов кода не найдено; завершаем")
@@ -558,15 +634,18 @@ def run(cfg: RunConfig) -> RunStats:
 
     # --- Шаг 3: SUMMARY (init) ---
     logger.info("шаг 3: SUMMARY.md (init)")
-    _step_summary(cfg, files, [], stats, final=False)
+    _step_summary(cfg, files, [], stats, final=False,
+                  has_git=git_data.has_git)
 
     # --- Шаг 4: обход файлов ---
     logger.info("шаг 4: обход %d файлов", len(files))
-    created_md = _step_modules(cfg, files, stats)
+    created_md = _step_modules(cfg, files, stats,
+                               has_git=git_data.has_git)
 
     # --- Шаг 5: SUMMARY (final) ---
     logger.info("шаг 5: SUMMARY.md (final)")
-    _step_summary(cfg, files, created_md, stats, final=True)
+    _step_summary(cfg, files, created_md, stats, final=True,
+                  has_git=git_data.has_git)
 
     # --- Итог ---
     logger.info(

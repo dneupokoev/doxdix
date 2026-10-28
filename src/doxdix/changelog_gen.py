@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from .scanner import GitCommit
 
-dv_file_version = '261028.04'
+dv_file_version = '261028.05'
 logger = logging.getLogger(__name__)
 
 
@@ -153,11 +153,19 @@ def format_grouped(parsed: list[ParsedCommit]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _build_unreleased_block(parsed: list[ParsedCommit]) -> str:
-    """Собрать `## [Unreleased]` + содержимое. Пустая секция — заглушка."""
-    body = format_grouped(parsed).rstrip()
+def _build_unreleased_block(parsed: list[ParsedCommit],
+                            body_override: str | None = None) -> str:
+    """Собрать `## [Unreleased]` + содержимое. Пустая секция — заглушка.
+
+    body_override — готовый текст тела (например, переписанный LLM
+    через --changelog-llm, см. ТЗ п. 6.3/7.4). Если пуст — берём
+    детерминированную группировку по секциям.
+    """
+    body = (body_override or "").strip()
     if not body:
-        body = "### Added\n- (нет изменений)\n"
+        body = format_grouped(parsed).rstrip()
+    if not body:
+        body = "### Added\n- (нет изменений)"
     return "## [Unreleased]\n\n" + body + "\n"
 
 
@@ -215,7 +223,7 @@ def _merge_append(existing: str, unreleased_block: str) -> str:
 
 
 def generate(commits: list[GitCommit], existing_content: str,
-             append: bool) -> str:
+             append: bool, unreleased_block: str | None = None) -> str:
     """Сгенерировать полный текст CHANGELOG.md.
 
     Параметры:
@@ -223,18 +231,22 @@ def generate(commits: list[GitCommit], existing_content: str,
         existing_content — текущий CHANGELOG.md или "".
         append — True (по умолчанию): вставка после `# Changelog`,
                  False: полная перезапись.
+        unreleased_block — готовое тело `[Unreleased]` (результат
+                 --changelog-llm, ТЗ п. 6.3/7.4). None или "" —
+                 детерминированная группировка по секциям.
 
     Возвращает готовый текст файла. Если коммитов, попадающих в секции,
     нет — возвращает существующее содержимое без изменений (append=True)
     или минимальный шаблон (append=False).
     """
     parsed = parse_commits(commits)
-    unreleased = _build_unreleased_block(parsed)
+    llm_body = (unreleased_block or "").strip()
+    unreleased = _build_unreleased_block(parsed, llm_body or None)
 
     if not append:
         return "# Changelog\n\n" + unreleased
 
-    if not parsed and existing_content.strip():
+    if not parsed and not llm_body and existing_content.strip():
         # Нечего добавлять — не трогаем существующий файл.
         logger.info("changelog: нечего добавлять, файл не изменён")
         return existing_content

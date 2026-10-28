@@ -21,7 +21,7 @@ from . import backup as backup_mod
 from . import llm
 from . import orchestrator
 
-dv_file_version = '261028.13'
+dv_file_version = '261028.14'
 logger = logging.getLogger(__name__)
 
 
@@ -200,7 +200,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
     try:
         available = llm.check_model(url, model, timeout=10, api_key=key)
     except llm.LLMError as exc:
-        print(f"doxdix: LLM недоступен: {exc.message}", file=sys.stderr)
+        print(f"doxdix: ошибка LLM: {exc.message}", file=sys.stderr)
         if exc.body:
             print(f"  тело: {exc.body[:500]}", file=sys.stderr)
         return 2
@@ -312,7 +312,7 @@ def _cmd_run(args: argparse.Namespace, project_root: Path) -> int:
             cfg.ollama_url, cfg.model, timeout=10, api_key=cfg.api_key,
         )
     except llm.LLMError as exc:
-        logger.error("LLM недоступен: %s", exc.message)
+        logger.error("ошибка LLM: %s", exc.message)
         if exc.body:
             logger.error("тело: %s", exc.body[:500])
         return 2
@@ -324,7 +324,12 @@ def _cmd_run(args: argparse.Namespace, project_root: Path) -> int:
                 logger.error("  - %s", name)
         return 2
 
-    stats = orchestrator.run(cfg)
+    try:
+        stats = orchestrator.run(cfg)
+    except orchestrator.ConfigError as exc:
+        # Неверный путь/конфигурация — код 2 (ТЗ п. 5, п. 10).
+        logger.error("конфигурация: %s", exc)
+        return 2
     logger.info(
         "Успешно: %d, ошибок: %d, пропущено: %d. Лог: %s",
         stats.success, stats.errors, stats.skipped, cfg.log_file,

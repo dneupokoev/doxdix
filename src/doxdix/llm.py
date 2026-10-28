@@ -28,7 +28,7 @@ import logging
 
 import requests
 
-dv_file_version = '261028.11'
+dv_file_version = '261028.12'
 logger = logging.getLogger(__name__)
 
 
@@ -150,6 +150,15 @@ def _check_ollama(base_url: str, timeout: int) -> list[str]:
             name = m.get("name")
             if isinstance(name, str) and name:
                 names.append(name)
+    if not names:
+        # Пустой список у Ollama: моделей нет, значит запрошенной точно
+        # нет. Для OpenAI 404 обрабатывается отдельно в _check_openai
+        # (там пустой список [] = «список не предоставлен»). См. ТЗ п. 8.
+        raise LLMError(
+            f"Ollama /api/tags вернул пустой список моделей; "
+            f"загрузите модель: ollama pull <name> (url: {url})",
+            body=(resp.text or "")[:1000],
+        )
     return names
 
 
@@ -265,6 +274,10 @@ def check_model(base_url: str, model: str, timeout: int = 10,
 
     Наличие `model` проверяет вызывающая сторона (cli.py), чтобы
     показать список. Бросает LLMError, если сервер недоступен.
+
+    Пустой список `[]` возможен только в OpenAI-режиме при 404 на
+    `/v1/models` (прокси не отдаёт список) — тогда проверка имени
+    модели пропускается. У Ollama пустой `/api/tags` — это LLMError.
     """
     if _is_openai_mode(base_url):
         return _check_openai(base_url, timeout, api_key)
