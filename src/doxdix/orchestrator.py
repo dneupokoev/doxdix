@@ -25,7 +25,7 @@ from . import llm
 from . import prompts
 from . import scanner
 
-dv_file_version = '261028.20'
+dv_file_version = '261028.22'
 logger = logging.getLogger(__name__)
 
 
@@ -150,19 +150,32 @@ def _strip_implicit_src_root(rel: Path) -> Path:
     return rel
 
 
-def _md_path_for(code_file: Path, project_root: Path,
-                 src_dir: str | None, docs_dir: str) -> Path:
-    """Правило зеркалирования: код -> docs_dir/<rel>.md.
+def _md_path_for(code_file: Path, subproject: str | None,
+                 project_root: Path, src_dir: str | None,
+                 docs_dir: str) -> Path:
+    """Правило зеркалирования: код -> путь .md.
 
-    Решение п. 5: относительный путь от src_dir (если задан) или от
-    project_root; префикс docs_dir; расширение меняется на .md.
-    Без --src-dir первый компонент из _IMPLICIT_SRC_ROOTS отрезается.
+    subproject задан (монорежим): docs_dir/<subproject>/<путь от корня
+    подпроекта>.md; для корневого проекта subproject = "root":
+    src/doxdix/backup.py -> docs/modules/root/src/doxdix/backup.md.
+
+    subproject=None (--no-monorepo): плоская структура docs_dir/<rel>.md,
+    где rel считается от src_dir (если задан) или от project_root
+    (с отрезанием implicit src-корня из _IMPLICIT_SRC_ROOTS).
     """
-    if src_dir:
-        rel = code_file.relative_to((project_root / src_dir).resolve())
-    else:
-        rel = _strip_implicit_src_root(code_file.relative_to(project_root))
-    return (project_root / docs_dir / rel).with_suffix(".md")
+    if subproject is None:
+        if src_dir:
+            rel = code_file.relative_to(
+                (project_root / src_dir).resolve(),
+            )
+        else:
+            rel = _strip_implicit_src_root(
+                code_file.relative_to(project_root),
+            )
+        return (project_root / docs_dir / rel).with_suffix(".md")
+    sub_root = scanner.subproject_root(project_root, subproject)
+    rel = code_file.relative_to(sub_root).with_suffix(".md")
+    return project_root / docs_dir / subproject / rel
 
 
 def _git_commit(project_root: Path, paths: list[str], message: str,
@@ -564,25 +577,55 @@ def _step_summary(cfg: RunConfig, files: list[Path],
 # Шаг 4: обход файлов
 # --------------------------------------------------------------------------
 
-def _step_modules(cfg: RunConfig, files: list[Path],
+def _step_modules(cfg: RunConfig,
+                  files_by_subproject: dict[str, list[Path]],
                   stats: RunStats, cache: cache_mod.Cache,
                   has_git: bool = True) -> list[Path]:
     """Обойти файлы кода, сгенерировать/обновить .md для каждого.
 
-    Файл, код которого не менялся с прошлого запуска (хэш совпал с
-    .doxdix/cache.json) и для которого .md уже существует, пропускается
-    без обращения к LLM. При cfg.force кэш игнорируется.
+    Файлы приходят сгруппированными по подпроектам. Файл, код которого
+    не менялся с прошлого запуска (хэш совпал с .doxdix/cache.json) и
+    для которого .md уже существует, пропускается без обращения к LLM.
+    В монорежиме ключ кэша включает подпроект (`<subproject>/<путь>`),
+    поэтому одинаковые относительные пути в разных подпроектах не
+    конфликтуют; при --no-monorepo ключ — путь от корня проекта.
+    При cfg.force кэш игнорируется.
     Возвращает список созданных/обновлённых .md путей.
     """
+    # Плоский план обхода: (подпроект | None, файл, корень подпроекта).
+    # subproject=None — режим --no-monorepo (плоская структура docs/).
+    plan: list[tuple[str | None, Path, Path]] = []
+    for subproject, files in files_by_subproject.items():
+        if not files:
+            continue
+        if cfg.monorepo:
+            sub_root = scanner.subproject_root(
+                cfg.project_root, subproject,
+            )
+            logger.info("подпроект %s: %d файлов", subproject, len(files))
+        else:
+            sub_root = cfg.project_root
+        key = subproject if cfg.monorepo else None
+        for code_path in files:
+            plan.append((key, code_path, sub_root))
+
     created: list[Path] = []
-    total = len(files)
-    for idx, code_path in enumerate(files, start=1):
+    total = len(plan)
+    for idx, (subproject, code_path, sub_root) in enumerate(plan, start=1):
         started = time.monotonic()
         rel = code_path.relative_to(cfg.project_root)
-        md_path = _md_path_for(code_path, cfg.project_root,
+        rel_in_sub = code_path.relative_to(sub_root)
+        md_path = _md_path_for(code_path, subproject, cfg.project_root,
                                cfg.src_dir, cfg.docs_dir)
         md_rel = md_path.relative_to(cfg.project_root)
-        cache_key = rel.as_posix()
+        if subproject is None:
+            # Плоский режим: ключ кэша прежний — путь от корня проекта.
+            cache_key = rel.as_posix()
+        else:
+            # Ключ обязан включать подпроект: один и тот же
+            # относительный путь (например, assets/util.py) может
+            # встретиться в нескольких подпроектах.
+            cache_key = f"{subproject}/{rel_in_sub.as_posix()}"
 
         # Хэш считаем до чтения текста: при совпадении с кэшем и
         # наличии .md файл не читается как UTF-8 и не уходит в LLM
@@ -727,7 +770,7 @@ def run(cfg: RunConfig) -> RunStats:
     # --- Шаг 0: сканирование ---
     logger.info("шаг 0: сканирование %s", project_root)
     try:
-        files, git_data = scanner.scan(
+        files_by_subproject, git_data = scanner.scan_grouped(
             project_root=project_root,
             src_dir=cfg.src_dir,
             extensions=cfg.extensions,
@@ -741,8 +784,18 @@ def run(cfg: RunConfig) -> RunStats:
         logger.error("сканирование: %s", exc)
         raise ConfigError(str(exc)) from exc
 
+    # Плоский список нужен для промптов README/SUMMARY и итоговой сводки.
+    files = sorted(
+        (f for group in files_by_subproject.values() for f in group),
+        key=lambda p: p.as_posix(),
+    )
     if files:
-        logger.info("найдено файлов: %d", len(files))
+        logger.info(
+            "найдено файлов: %d в подпроектах: %d",
+            len(files), len(files_by_subproject),
+        )
+        for name, group in files_by_subproject.items():
+            logger.info("  подпроект %s: %d файлов", name, len(group))
     else:
         # Не выходим: CHANGELOG/README/SUMMARY всё равно можно
         # актуализировать, шаг 4 просто вернёт пустой список
@@ -785,12 +838,13 @@ def run(cfg: RunConfig) -> RunStats:
                   has_git=git_data.has_git)
 
     # --- Шаг 4: обход файлов (с кэшем хэшей) ---
-    logger.info("шаг 4: обход %d файлов", len(files))
+    logger.info("шаг 4: обход %d файлов в %d подпроектах",
+                len(files), len(files_by_subproject))
     if cfg.force:
         logger.info("кэш: проигнорирован (--force), все .md "
                     "будут перегенерированы")
     cache = cache_mod.Cache.load(project_root)
-    created_md = _step_modules(cfg, files, stats, cache,
+    created_md = _step_modules(cfg, files_by_subproject, stats, cache,
                                has_git=git_data.has_git)
     cache.save()
 

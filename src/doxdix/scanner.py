@@ -3,6 +3,14 @@
 Публичный API:
     scan(project_root, src_dir, extensions, user_excludes, use_git,
          changelog_limit) -> tuple[list[Path], GitData]
+    scan_grouped(project_root, src_dir, extensions, user_excludes,
+                 use_git, changelog_limit)
+        -> tuple[dict[str, list[Path]], GitData]
+    find_subproject_roots(project_root, user_excludes) -> list[Path]
+    group_by_subproject(files, project_root, user_excludes)
+        -> dict[str, list[Path]]
+    subproject_root(project_root, subproject) -> Path
+    ROOT_SUBPROJECT
 
 Правила (см. ТЗ п. 6.1 и решения по неоднозначностям):
 - Если git доступен — обрабатываются только отслеживаемые файлы
@@ -11,6 +19,10 @@
   фильтрами.
 - Ошибки git логируются как warning; сканирование продолжается без
   git-данных.
+- Монорепозиторий: каталоги с маркером из SUBPROJECT_MARKERS считаются
+  корнями подпроектов. Файл относится к ближайшему (самому глубокому)
+  корню-предку; корневой проект и файлы вне известных подпроектов — к
+  ключу ROOT_SUBPROJECT ("root").
 """
 from __future__ import annotations
 
@@ -19,7 +31,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-dv_file_version = '261028.02'
+dv_file_version = '261028.03'
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +47,14 @@ DEFAULT_EXCLUDE_DIRS: frozenset[str] = frozenset({
 DEFAULT_EXCLUDE_FILE_PATTERNS: tuple[str, ...] = (
     "test_*", "*_test.*", "*.min.*", "*.spec.*", "conftest.py",
 )
+
+# Маркеры корня подпроекта в монорепозитории.
+SUBPROJECT_MARKERS: tuple[str, ...] = (
+    "pyproject.toml", "package.json", "Cargo.toml", "go.mod",
+)
+
+# Ключ корневого подпроекта (сам PROJECT_PATH или файлы вне подпроектов).
+ROOT_SUBPROJECT = "root"
 
 
 @dataclass(frozen=True)
@@ -259,6 +279,106 @@ def _iter_tracked(git_data: GitData, project_root: Path,
     return result
 
 
+def _dir_is_excluded(name: str, user_excludes: list[str]) -> bool:
+    """Исключена ли директория по имени при поиске корней подпроектов."""
+    if name in DEFAULT_EXCLUDE_DIRS:
+        return True
+    if name in user_excludes:
+        return True
+    return any(_matches_glob(name, pattern) for pattern in user_excludes)
+
+
+def find_subproject_roots(project_root: Path,
+                          user_excludes: list[str]) -> list[Path]:
+    """Найти каталоги-корни подпроектов (абсолютные пути).
+
+    Корнем считается директория, где есть один из SUBPROJECT_MARKERS.
+    Обход начинается с project_root (сам корень тоже может быть
+    подпроектом). Исключаемые и скрытые каталоги не просматриваются.
+    """
+    project_root = project_root.resolve()
+    roots: list[Path] = []
+    stack: list[Path] = [project_root]
+    while stack:
+        current = stack.pop()
+        try:
+            if any((current / m).is_file() for m in SUBPROJECT_MARKERS):
+                roots.append(current)
+            children = list(current.iterdir())
+        except OSError as exc:
+            logger.warning("поиск подпроектов: %s: %s", current, exc)
+            continue
+        for child in children:
+            if child.is_symlink() or not child.is_dir():
+                continue
+            if child.name.startswith("."):
+                continue
+            if _dir_is_excluded(child.name, user_excludes):
+                continue
+            stack.append(child)
+    roots.sort(key=lambda p: p.as_posix())
+    logger.debug("подпроекты: найдено корней: %d", len(roots))
+    return roots
+
+
+def _root_index(project_root: Path,
+                roots: list[Path]) -> dict[str, Path]:
+    """Отображение ключ подпроекта -> абсолютный путь его корня."""
+    index: dict[str, Path] = {}
+    for root in roots:
+        rel = root.relative_to(project_root).as_posix()
+        index[ROOT_SUBPROJECT if rel == "." else rel] = root
+    return index
+
+
+def _subproject_for_file(path: Path, project_root: Path,
+                         index: dict[str, Path]) -> str:
+    """Ключ ближайшего (самого глубокого) подпроекта для файла."""
+    current = path.parent
+    while True:
+        try:
+            rel = current.relative_to(project_root).as_posix()
+        except ValueError:
+            return ROOT_SUBPROJECT
+        key = ROOT_SUBPROJECT if rel == "." else rel
+        if key in index:
+            return key
+        if current == project_root:
+            return ROOT_SUBPROJECT
+        current = current.parent
+
+
+def subproject_root(project_root: Path, subproject: str) -> Path:
+    """Абсолютный путь корня подпроекта по его ключу."""
+    if subproject == ROOT_SUBPROJECT:
+        return project_root
+    return project_root / subproject
+
+
+def group_by_subproject(files: list[Path], project_root: Path,
+                        user_excludes: list[str]) -> dict[str, list[Path]]:
+    """Сгруппировать файлы по подпроектам.
+
+    Ключ — относительный путь корня подпроекта от project_root, для
+    корневого проекта и файлов вне известных подпроектов — "root".
+    Группы упорядочены: "root" первой, далее по алфавиту; файлы внутри
+    группы отсортированы по пути.
+    """
+    project_root = project_root.resolve()
+    roots = find_subproject_roots(project_root, user_excludes)
+    index = _root_index(project_root, roots)
+    groups: dict[str, list[Path]] = {}
+    for path in files:
+        key = _subproject_for_file(path, project_root, index)
+        groups.setdefault(key, []).append(path)
+
+    ordered: dict[str, list[Path]] = {}
+    for key in sorted(groups, key=lambda k: (k != ROOT_SUBPROJECT, k)):
+        ordered[key] = sorted(groups[key], key=lambda p: p.as_posix())
+    logger.info("подпроекты с файлами: %d", len(ordered))
+    return ordered
+
+
 def scan(project_root: Path,
          src_dir: str | None,
          extensions: list[str],
@@ -323,6 +443,32 @@ def scan(project_root: Path,
         len(files), src_dir or "<весь проект>", ",".join(exts),
     )
     return files, git_data
+
+
+def scan_grouped(project_root: Path,
+                 src_dir: str | None,
+                 extensions: list[str],
+                 user_excludes: list[str],
+                 use_git: bool,
+                 changelog_limit: int
+                 ) -> tuple[dict[str, list[Path]], GitData]:
+    """Как scan(), но результат сгруппирован по подпроектам.
+
+    Ключ — имя подпроекта (относительный путь корня от project_root,
+    "root" для корневого проекта / файлов вне подпроектов).
+    """
+    files, git_data = scan(
+        project_root=project_root,
+        src_dir=src_dir,
+        extensions=extensions,
+        user_excludes=user_excludes,
+        use_git=use_git,
+        changelog_limit=changelog_limit,
+    )
+    grouped = group_by_subproject(
+        files, project_root.resolve(), user_excludes,
+    )
+    return grouped, git_data
 
 
 def _count_untracked(scan_root: Path, project_root: Path,
