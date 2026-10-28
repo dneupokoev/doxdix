@@ -45,7 +45,7 @@
 - Доступ к LLM:
   - **Ollama** на `http://localhost:11434` (по умолчанию), либо
   - **OpenAI-совместимый endpoint** (URL с `/v1`, ключ через `--api-key`).
-- Хотя бы одна загруженная модель.
+- Для Ollama — хотя бы одна загруженная модель.
 - Единственная Python-зависимость: `requests>=2.31`.
 
 ## Установка
@@ -174,14 +174,14 @@ export DOXDIX_MODEL="qwen2.5-coder:14b"
 ```
 src/doxdix/
 ├── __init__.py       # версия пакета
-├── cli.py            # точка входа, разбор аргументов, режимы --check / --restore
-├── scanner.py        # обход файлов (git ls-files или файловая система)
-├── cache.py          # кэш хэшей файлов для пропуска неизменённых
 ├── backup.py         # бэкап, manifest.json (sha256), восстановление
+├── cache.py          # кэш хэшей файлов для пропуска неизменённых
 ├── changelog_gen.py  # разбор Conventional Commits → CHANGELOG.md
+├── cli.py            # точка входа, разбор аргументов, режимы --check / --restore
 ├── llm.py            # клиенты Ollama (/api/*) и OpenAI-совместимых (/v1/*)
+├── orchestrator.py   # конвейер: сканирование → бэкап → LLM → запись → итог
 ├── prompts.py        # шаблоны промптов (README, модули, SUMMARY)
-└── orchestrator.py   # конвейер: сканирование → бэкап → LLM → запись → итог
+└── scanner.py        # обход файлов (git ls-files или файловая система)
 ```
 
 ## Безопасность и приватность
