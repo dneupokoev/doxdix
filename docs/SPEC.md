@@ -28,13 +28,18 @@ project/
 ├── LICENSE                # plain text, doxdix НЕ трогает (только читает для ссылки в README)
 ├── docs/
 │   ├── SUMMARY.md         # актуализируется LLM (всегда в docs/, независимо от --docs-dir)
-│   └── modules/           # зеркало src/, актуализируется LLM пофайлово
-│       ├── auth/
-│       │   └── login.md
-│       └── utils/
-│           └── helpers.md
+│   └── modules/           # зеркало дерева подпроектов, LLM пофайлово
+│       ├── root/          # файлы корневого проекта / вне подпроектов
+│       │   └── src/
+│       │       └── auth/
+│       │           └── login.md
+│       └── services/
+│           └── api/       # подпроект services/api (package.json)
+│               └── src/
+│                   └── utils/
+│                       └── helpers.md
 └── .doxdix/
-    ├── cache.json         # кэш sha256 обработанных файлов
+    ├── cache.json         # кэш sha256; ключ — <подпроект>/<путь>
     └── backups/
         └── <timestamp>/
             ├── README.md
@@ -43,7 +48,9 @@ project/
             └── manifest.json
 ```
 
-**Правило зеркалирования:** относительный путь от `--src-dir` сохраняется, расширение меняется на `.md`, файл кладётся в `--docs-dir` (по умолчанию `docs/modules`). Примеры: `src/auth/login.py` → `docs/modules/auth/login.md`; `src/api/v1/users.ts` → `docs/modules/api/v1/users.md`. Если `--src-dir` не указан (обход всего проекта) — относительный путь от корня проекта, с префиксом `docs/modules/`.
+**Правило зеркалирования (монорепозиторий):** документация раскладывается по подпроектам: `<docs-dir>/<подпроект>/<путь от корня подпроекта>.md` (по умолчанию `docs/modules/...`). Для файлов корневого проекта и файлов вне известных подпроектов `<подпроект>` = `root`. Примеры: `services/api/src/utils/helpers.py` (подпроект `services/api`) → `docs/modules/services/api/src/utils/helpers.md`; `src/doxdix/cache.py` (корень) → `docs/modules/root/src/doxdix/cache.md`.
+
+**Плоский режим (`--no-monorepo`):** группировка отключается, документация кладётся в `<docs-dir>/<путь>.md` — относительный путь от `--src-dir` (если задан) или от корня проекта; без `--src-dir` первый компонент `src/` срезается. Примеры: `src/auth/login.py` → `docs/modules/auth/login.md`; `src/api/v1/users.ts` → `docs/modules/api/v1/users.md`.
 
 **LICENSE:** plain text без расширения. doxdix его не изменяет. Используется только для определения типа лицензии и вставки ссылки в README.
 
@@ -125,6 +132,7 @@ doxdix PROJECT_PATH [options]
 |---|---|---|
 | `--src-dir PATH` | весь проект | Подпапка с исходным кодом (относительно PROJECT_PATH) |
 | `--docs-dir PATH` | `docs/modules` | Куда класть документацию модулей |
+| `--no-monorepo` | выкл. | Не группировать файлы по подпроектам: плоская структура `docs/modules/<путь>.md` |
 | `--model NAME` | `DOXDIX_MODEL` или обязательный | Имя модели (Ollama или OpenAI-совместимой) |
 | `--ollama-url URL` | `DOXDIX_OLLAMA_URL` или `http://localhost:11434` | Адрес LLM. Если URL содержит `/v1`, включается OpenAI-режим |
 | `--api-key KEY` | `DOXDIX_API_KEY` или `dummy` | Токен для OpenAI-режима |
@@ -169,7 +177,9 @@ doxdix PROJECT_PATH [options]
 
 Все вызовы — через `subprocess.run(cwd=project_root, capture_output=True, text=True, timeout=30)`. Ошибки git — `logger.warning`, продолжаем без git-данных.
 
-**Результат шага:** список `Path` к файлам кода (отсортирован по строковому пути), dataclass `GitData {has_git, commits, tracked_files}`.
+**Подпроекты (монорепозиторий).** Дополнительно `scanner.py` ищет «корни подпроектов»: директории (начиная с `PROJECT_PATH`), в которых лежит хотя бы один маркер — `pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`. Скрытые и исключённые каталоги не просматриваются. Каждый найденный файл относится к **ближайшему (самому глубокому)** корню-предку; файлы самого `PROJECT_PATH` и файлы вне известных подпроектов — к ключу `root`. Реализация: `find_subproject_roots()`, `group_by_subproject()`, `subproject_root()`, обёртка `scan_grouped()` (`scan()` сохранён для обратной совместимости).
+
+**Результат шага:** `dict[str, list[Path]]` — файлы кода, сгруппированные по подпроектам (ключ — относительный путь корня подпроекта от `PROJECT_PATH`, `root` для корневого проекта; `root` первым, далее по алфавиту; файлы внутри группы отсортированы по пути), и dataclass `GitData {has_git, commits, tracked_files}`.
 
 ### 6.2. Шаг 0.5 — Бэкап
 
@@ -243,17 +253,17 @@ doxdix PROJECT_PATH [options]
 
 Для каждого файла из списка (отсортирован по пути):
 
-1. `rel_path` — путь относительно `PROJECT_PATH`.
-2. `md_path` — по правилу зеркалирования.
+1. `rel_path` — путь относительно `PROJECT_PATH`; `subproject` — ключ группы (`root` для корневого проекта).
+2. `md_path` — `<docs-dir>/<subproject>/<путь от корня подпроекта>.md`.
 3. Создать родительские папки.
-4. **Проверка кэша:** вычислить sha256 кода. Если не передан `--force`, `md_path` существует и хэш совпадает с сохранённым в `.doxdix/cache.json` — пропустить файл (`skipped += 1`), перейти к следующему.
+4. **Проверка кэша:** вычислить sha256 кода. Ключ кэша — `<subproject>/<путь от корня подпроекта>` (в режиме `--no-monorepo` — путь от корня проекта). Если не передан `--force`, `md_path` существует и хэш совпадает с сохранённым в `.doxdix/cache.json` — пропустить файл (`skipped += 1`), перейти к следующему.
 5. Прочитать `code_content`. Прочитать `existing_content` (если `md_path` существует, иначе `""`).
 6. **Проверка размера:** если `len(existing_content) // 4 > max_doc_tokens` — пропустить файл, залогировать warning, увеличить счётчик пропущенных, перейти к следующему.
 7. Сформировать промпт (п. 7.3). Отправить в LLM с `num_ctx` и `timeout`.
 8. **Постобработка:** `_strip_code_fence`.
 9. Записать ответ в `md_path` и обновить кэш: `Cache.set(rel_key, sha)`.
 10. **Git-коммит** (если не `--no-commit` и `has_git`): `docs(doxdix): <rel_path>`.
-11. Логировать: `[12/34] src/auth/login.py → docs/modules/auth/login.md ... OK (8.2s)`.
+11. Логировать: `[12/34] services/api/src/utils/helpers.py → docs/modules/services/api/src/utils/helpers.md ... OK (8.2s)`.
 12. **При любой ошибке** — `log.error`, инкремент `errors`, **продолжить** со следующим файлом.
 
 ### 6.7. Шаг 5 — Финальное обновление SUMMARY.md
