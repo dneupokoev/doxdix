@@ -39,13 +39,13 @@
 ## Установка
 
 ```bash
-pipx install git+https://github.com/<user>/doxdix.git
+pipx install git+https://github.com/dneupokoev/doxdix.git
 ```
 
 Обновление:
 
 ```bash
-pipx install --force git+https://github.com/<user>/doxdix.git
+pipx install --force git+https://github.com/dneupokoev/doxdix.git
 ```
 
 Удаление:
