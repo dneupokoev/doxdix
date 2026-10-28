@@ -21,7 +21,7 @@ from . import backup as backup_mod
 from . import llm
 from . import orchestrator
 
-dv_file_version = '261028.16'
+dv_file_version = '261028.17'
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +52,10 @@ def _build_parser() -> argparse.ArgumentParser:
     g.add_argument("--docs-dir", metavar="PATH", default="docs/modules",
                    help="куда класть документацию модулей "
                         "(по умолчанию: docs/modules)")
+    g.add_argument("--no-monorepo", action="store_true",
+                   help="не группировать файлы по подпроектам: плоская "
+                        "структура docs/<docs-dir>/<путь>.md (как до "
+                        "поддержки монорепозиториев)")
     g.add_argument("--extensions", metavar="LIST", default=DEFAULT_EXTENSIONS,
                    help=f"расширения через запятую (по умолчанию: "
                         f"{DEFAULT_EXTENSIONS})")
@@ -279,6 +283,7 @@ def _build_run_config(args: argparse.Namespace,
         project_root=project_root,
         src_dir=args.src_dir,
         docs_dir=args.docs_dir,
+        monorepo=not args.no_monorepo,
         model=model,
         ollama_url=url,
         api_key=key,

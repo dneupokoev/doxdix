@@ -82,6 +82,9 @@ class RunConfig:
     do_backup: bool
     init_license: bool
     do_readme: bool = True
+    # False — не группировать по подпроектам (флаг --no-monorepo):
+    # плоская структура docs/<docs_dir>/<rel>.md, как до монорепо.
+    monorepo: bool = True
     # True — игнорировать .doxdix/cache.json и генерировать все .md
     # заново (флаг --force в cli.py).
     force: bool = False
