@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from . import llm
 from . import prompts
 from . import scanner
 
-dv_file_version = '261028.14'
+dv_file_version = '261028.15'
 logger = logging.getLogger(__name__)
 
 
@@ -477,6 +478,7 @@ def _step_modules(cfg: RunConfig, files: list[Path],
     created: list[Path] = []
     total = len(files)
     for idx, code_path in enumerate(files, start=1):
+        started = time.monotonic()
         rel = code_path.relative_to(cfg.project_root)
         md_path = _md_path_for(code_path, cfg.project_root,
                                cfg.src_dir, cfg.docs_dir)
@@ -522,8 +524,9 @@ def _step_modules(cfg: RunConfig, files: list[Path],
             continue
         created.append(md_path)
         stats.success += 1
-        logger.info("[%d/%d] %s -> %s ... OK",
-                    idx, total, rel, md_rel)
+        elapsed = time.monotonic() - started
+        logger.info("[%d/%d] %s -> %s ... OK (%.1fs)",
+                    idx, total, rel, md_rel, elapsed)
         _git_commit(cfg.project_root, [str(md_rel)],
                     f"docs(doxdix): {rel}", cfg.do_commit, has_git)
     return created
